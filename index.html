@@ -823,10 +823,10 @@ function renderTable(filtered){
       g.weeks[r.weekKey] = (g.weeks[r.weekKey]||0) + r.cantidad;
       if(!g.weekEstados[r.weekKey]) g.weekEstados[r.weekKey] = new Set();
       g.weekEstados[r.weekKey].add(r.estado);
-      const gk = getContainerGroupKey(r);
-      if(gk && LAST_CHANGES.has(gk.key)){
+      const dck = getDateChangeKey(r);
+      if(dck && LAST_CHANGES.has(dck.key)){
         if(!g.weekChangeKeys[r.weekKey]) g.weekChangeKeys[r.weekKey] = new Set();
-        g.weekChangeKeys[r.weekKey].add(gk.key);
+        g.weekChangeKeys[r.weekKey].add(dck.key);
       }
     } else {
       g.sinFecha += r.cantidad;
@@ -936,20 +936,20 @@ function computeDateChanges(prevRows, newRows){
   if(!prevRows || !prevRows.length) return changes;
   const prevMap = new Map();
   prevRows.forEach(r=>{
-    const gk = getContainerGroupKey(r);
-    if(!gk || !r.weekKey) return;
-    if(!prevMap.has(gk.key)) prevMap.set(gk.key, {weekKey:r.weekKey, weekLabel:r.weekLabel, fecha:r.fecha});
+    const dck = getDateChangeKey(r);
+    if(!dck || !r.weekKey) return;
+    if(!prevMap.has(dck.key)) prevMap.set(dck.key, {weekKey:r.weekKey, weekLabel:r.weekLabel, fecha:r.fecha});
   });
   newRows.forEach(r=>{
-    const gk = getContainerGroupKey(r);
-    if(!gk || !r.weekKey) return;
-    if(changes.has(gk.key)) return;
-    const prev = prevMap.get(gk.key);
+    const dck = getDateChangeKey(r);
+    if(!dck || !r.weekKey) return;
+    if(changes.has(dck.key)) return;
+    const prev = prevMap.get(dck.key);
     if(!prev || prev.weekKey===r.weekKey) return;
     const deltaWeeks = computeWeekDelta(prev.weekKey, r.weekKey);
     if(deltaWeeks===0) return;
-    changes.set(gk.key, {
-      kind: gk.kind, ref: gk.ref,
+    changes.set(dck.key, {
+      containerKey: dck.containerKey, kind: dck.kind, ref: dck.ref,
       oldWeekLabel: prev.weekLabel.replace(/\s*\(.*\)/,''),
       newWeekLabel: r.weekLabel.replace(/\s*\(.*\)/,''),
       oldFecha: prev.fecha, newFecha: r.fecha,
@@ -970,18 +970,22 @@ function renderChangesBanner(filtered){
   const groupByKey = new Map(allGroups.map(g=>[g.key,g]));
 
   const buckets = new Map();
-  let shownCount = 0;
-  LAST_CHANGES.forEach((c, key)=>{
-    const g = groupByKey.get(key);
+  LAST_CHANGES.forEach(c=>{
+    const g = groupByKey.get(c.containerKey);
     if(!g) return;
-    shownCount++;
+    const stillPresent = g.items.some(it=>it.producto===c.producto && it.modelo===c.modelo);
+    if(!stillPresent) return;
     let bucketKey, bucketLabel;
     if(c.deltaWeeks < 0){ bucketKey='advance'; bucketLabel='Adelanto'; }
     else { bucketKey='delay'+c.deltaWeeks; bucketLabel='Atraso '+c.deltaWeeks+' semana'+(c.deltaWeeks>1?'s':''); }
-    if(!buckets.has(bucketKey)) buckets.set(bucketKey, {label:bucketLabel, colorClass:c.colorClass, entries:[]});
-    buckets.get(bucketKey).entries.push({key, g});
+    if(!buckets.has(bucketKey)) buckets.set(bucketKey, {label:bucketLabel, colorClass:c.colorClass, containers:new Map()});
+    const bucket = buckets.get(bucketKey);
+    if(!bucket.containers.has(c.containerKey)) bucket.containers.set(c.containerKey, {g, models:[]});
+    bucket.containers.get(c.containerKey).models.push(c.producto+' '+c.modelo);
   });
 
+  let shownCount = 0;
+  buckets.forEach(b=>{ shownCount += b.containers.size; });
   if(!shownCount){ document.getElementById('changesBanner').style.display='none'; return; }
   document.getElementById('changesBannerTitle').textContent = shownCount+' embarque'+(shownCount>1?'s':'')+' cambiaron de fecha desde tu última visita';
 
@@ -999,20 +1003,19 @@ function renderChangesBanner(filtered){
     const sectionTitle = document.createElement('div');
     sectionTitle.style.cssText = 'display:flex; align-items:center; gap:7px; font-weight:700; margin-bottom:3px;';
     const dot = document.createElement('span'); dot.className='cb-dot '+bucket.colorClass;
-    const lbl = document.createElement('span'); lbl.textContent = bucket.label+' ('+bucket.entries.length+')';
+    const lbl = document.createElement('span'); lbl.textContent = bucket.label+' ('+bucket.containers.size+')';
     sectionTitle.appendChild(dot); sectionTitle.appendChild(lbl);
     sectionLi.appendChild(sectionTitle);
 
-    bucket.entries.forEach(({key,g})=>{
+    bucket.containers.forEach(({g,models}, containerKey)=>{
       const row = document.createElement('div');
       row.style.cssText = 'padding:2px 0 2px 16px;';
       const refSpan = document.createElement('span');
       refSpan.style.cssText = 'color:var(--brand-navy); font-weight:600; cursor:pointer; text-decoration:underline;';
       refSpan.textContent = g.kind==='operador' ? ('Ref. operador '+g.nro) : g.nro;
-      refSpan.onclick = ()=>openContainerModalForKey(key, filtered);
+      refSpan.onclick = ()=>openContainerModalForKey(containerKey, filtered);
       const modelsTxt = document.createElement('span');
-      const modelsSet = [...new Set(g.items.map(it=>it.producto+' '+it.modelo))];
-      modelsTxt.textContent = ': '+modelsSet.join(', ');
+      modelsTxt.textContent = ': '+[...new Set(models)].join(', ');
       row.appendChild(refSpan); row.appendChild(modelsTxt);
       sectionLi.appendChild(row);
     });
@@ -1045,6 +1048,12 @@ function getContainerGroupKey(r){
   return null;
 }
 
+function getDateChangeKey(r){
+  const gk = getContainerGroupKey(r);
+  if(!gk) return null;
+  return {key: gk.key+'::'+r.producto+'::'+r.modelo, containerKey: gk.key, kind: gk.kind, ref: gk.ref};
+}
+
 function groupContainers(filtered){
   const map = new Map();
   filtered.forEach(r=>{
@@ -1074,24 +1083,34 @@ function fmtNum1(n){ return n.toLocaleString('es-AR',{minimumFractionDigits:0,ma
 function buildContainerBlock(key, g, highlightFn){
   const block = document.createElement('div'); block.className = 'cont-block';
 
-  const chg = LAST_CHANGES.get(key);
-  if(chg){
-    const notice = document.createElement('div');
-    notice.style.cssText = 'border-radius:6px; padding:6px 10px; margin-bottom:8px; font-size:12.5px; font-weight:600;';
-    const bg = {'chg-advance':'#d7f3dd','chg-delay1':'#fdf0c0','chg-delaymulti':'#fad2d2'}[chg.colorClass];
-    const fg = {'chg-advance':'#0f6b3e','chg-delay1':'#7a5400','chg-delaymulti':'#8a1f1f'}[chg.colorClass];
-    notice.style.background = bg; notice.style.color = fg;
-    const dirTxt = chg.deltaWeeks<0 ? ('Se adelantó '+Math.abs(chg.deltaWeeks)+' semana(s)') : ('Se atrasó '+chg.deltaWeeks+' semana(s)');
-    const lineTitle = document.createElement('div');
-    lineTitle.textContent = 'Cambio de fecha: '+chg.oldWeekLabel+' → '+chg.newWeekLabel+' ('+dirTxt+')';
-    notice.appendChild(lineTitle);
-    if(chg.oldFecha && chg.newFecha){
-      const lineDates = document.createElement('div');
-      lineDates.style.cssText = 'font-weight:500; margin-top:2px;';
-      lineDates.textContent = 'ETA anterior: '+fmtDateFull(chg.oldFecha)+'  →  ETA actual: '+fmtDateFull(chg.newFecha);
-      notice.appendChild(lineDates);
-    }
-    block.appendChild(notice);
+  const changesHere = [...LAST_CHANGES.values()].filter(c=>c.containerKey===key);
+  if(changesHere.length){
+    const sigMap = new Map();
+    changesHere.forEach(c=>{
+      const sig = (c.oldFecha?c.oldFecha.getTime():'')+'|'+(c.newFecha?c.newFecha.getTime():'')+'|'+c.deltaWeeks;
+      if(!sigMap.has(sig)) sigMap.set(sig, {sample:c, models:[]});
+      sigMap.get(sig).models.push(c.producto+' '+c.modelo);
+    });
+    const uniform = sigMap.size === 1;
+    sigMap.forEach(({sample:chg, models})=>{
+      const notice = document.createElement('div');
+      notice.style.cssText = 'border-radius:6px; padding:6px 10px; margin-bottom:8px; font-size:12.5px; font-weight:600;';
+      const bg = {'chg-advance':'#d7f3dd','chg-delay1':'#fdf0c0','chg-delaymulti':'#fad2d2'}[chg.colorClass];
+      const fg = {'chg-advance':'#0f6b3e','chg-delay1':'#7a5400','chg-delaymulti':'#8a1f1f'}[chg.colorClass];
+      notice.style.background = bg; notice.style.color = fg;
+      const dirTxt = chg.deltaWeeks<0 ? ('Se adelantó '+Math.abs(chg.deltaWeeks)+' semana(s)') : ('Se atrasó '+chg.deltaWeeks+' semana(s)');
+      const prefix = uniform ? '' : ([...new Set(models)].join(', ')+' — ');
+      const lineTitle = document.createElement('div');
+      lineTitle.textContent = prefix+'Cambio de fecha: '+chg.oldWeekLabel+' → '+chg.newWeekLabel+' ('+dirTxt+')';
+      notice.appendChild(lineTitle);
+      if(chg.oldFecha && chg.newFecha){
+        const lineDates = document.createElement('div');
+        lineDates.style.cssText = 'font-weight:500; margin-top:2px;';
+        lineDates.textContent = 'ETA anterior: '+fmtDateFull(chg.oldFecha)+'  →  ETA actual: '+fmtDateFull(chg.newFecha);
+        notice.appendChild(lineDates);
+      }
+      block.appendChild(notice);
+    });
   }
 
   const head = document.createElement('div'); head.className = 'cont-block-head';
